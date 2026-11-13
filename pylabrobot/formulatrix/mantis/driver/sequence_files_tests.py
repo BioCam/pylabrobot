@@ -7,7 +7,7 @@ import unittest
 from pylabrobot.formulatrix.mantis.driver.errors import MantisConfigurationError
 from pylabrobot.formulatrix.mantis.driver.sequence_files import parse_move_sequence
 
-# A route in the layout of a v4 install's station sequences, with synthetic positions: a remark, a
+# A route in the layout of a v4 install's approach path files, with synthetic positions: a remark, a
 # line naming no axis, X and Y, Z alone, all three, and a named target position.
 SYNTHETIC_ROUTE = (
   "RemarkSequenceItem Move%32To%32Somewhere \r\n"

@@ -33,7 +33,7 @@ For each unit block, setup takes:
 2. the one source's, when only one has it;
 3. the generation's recording's, when neither has it, with a warning: another unit's values,
    less accurate on this one. `save_configuration` does not save a block taken from a recording.
-   A block that calibrates motion (`MOTION_CALIBRATION_BLOCKS`: `arm`, `zones`, `stations`,
+   A block that calibrates motion (`MOTION_CALIBRATION_BLOCKS`: `arm`, `zones`, `approach_paths`,
    `stage`) is never taken from a recording, and no recording holds one: without it, the motion it
    calibrates refuses.
 

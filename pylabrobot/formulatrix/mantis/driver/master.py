@@ -65,7 +65,14 @@ from .framing import (
   parse_frame,
   split_frames,
 )
-from .oem_config import UNKNOWN_ZONE, WASH_STATIONS, ZONES, _load_unit_configuration
+from .oem_config import (
+  UNKNOWN_ZONE,
+  WASH_APPROACH_PATH,
+  WASH_POSITIONS,
+  WASTE_APPROACH_PATH,
+  ZONES,
+  _load_unit_configuration,
+)
 from .sequence_files import Waypoint
 
 logger = logging.getLogger(__name__)
@@ -83,6 +90,21 @@ SEQUENCER_QUEUE_SIZE = 200
 LAST_QUEUE_ITEM = 0x7FFF
 # The PPI address every queued write seen has gone to: the valve bank.
 QUEUED_PPI_ADDRESSES = (40,)
+
+
+def _get_approach_paths_from_stations(*, stations: Any) -> Any:
+  """A ``stations`` block, as files saved before the approach paths were named hold them, as an
+  ``approach_paths`` block; a malformed one is passed on as it is, for the arm's check to refuse."""
+  if not isinstance(stations, dict):
+    return stations
+  paths = {}
+  if "waste" in stations:
+    paths[WASTE_APPROACH_PATH] = stations["waste"]
+  wash = stations.get("wash", {})
+  if isinstance(wash, dict):
+    for position, lines in wash.items():
+      paths[WASH_APPROACH_PATH.format(position=position)] = lines
+  return paths
 
 
 class MantisDriver:
@@ -865,8 +887,8 @@ class MantisDriver:
     return calibration
 
   def _get_route_blocks(self) -> Dict[str, Any]:
-    """The ``zones`` and ``stations`` blocks as the arm takes them, by argument; each None without
-    its block.
+    """The ``zones`` and ``approach_paths`` blocks as the arm takes them, by argument; each None
+    without its block.
 
     Raises:
       MantisConfigurationError: if a block is malformed: a zone missing, a rectangle not four
@@ -884,11 +906,10 @@ class MantisDriver:
       "zone_rectangles": None,
       "safe_xy_routes": None,
       "idle_routes": None,
-      "waste_station_route": None,
-      "wash_station_routes": None,
+      "approach_paths": None,
     }
     zones = self._unit_blocks.get("zones")
-    stations = self._unit_blocks.get("stations")
+    approach_paths = self._unit_blocks.get("approach_paths")
     try:
       if zones is not None:
         rectangles = {}
@@ -898,22 +919,23 @@ class MantisDriver:
         routes["zone_rectangles"] = rectangles
         for field in ("safe_xy_routes", "idle_routes"):
           routes[field] = {zone: to_route(zones[field][zone]) for zone in (*ZONES, UNKNOWN_ZONE)}
-      if stations is not None:
-        if "waste" in stations:
-          routes["waste_station_route"] = to_route(stations["waste"])
-        routes["wash_station_routes"] = {
-          int(station): to_route(lines) for station, lines in stations.get("wash", {}).items()
+      if approach_paths is not None:
+        routes["approach_paths"] = {
+          str(name): to_route(lines) for name, lines in approach_paths.items()
         }
     except (KeyError, TypeError, ValueError, AttributeError) as error:
-      raise MantisConfigurationError(f"malformed zones or stations block: {error!r}") from error
+      raise MantisConfigurationError(
+        f"malformed zones or approach_paths block: {error!r}"
+      ) from error
     if routes["safe_xy_routes"] is not None and any(
       x is None or z is not None for route in routes["safe_xy_routes"].values() for x, _, z in route
     ):
       raise MantisConfigurationError("zones block: a route to safe XY moves the arms only")
-    if routes["wash_station_routes"] is not None and not set(routes["wash_station_routes"]) <= set(
-      WASH_STATIONS
-    ):
-      raise MantisConfigurationError(f"stations block: the wash stations are {WASH_STATIONS}")
+    known = {WASTE_APPROACH_PATH, *(WASH_APPROACH_PATH.format(position=p) for p in WASH_POSITIONS)}
+    if routes["approach_paths"] is not None and not set(routes["approach_paths"]) <= known:
+      raise MantisConfigurationError(
+        f"approach_paths block: the paths are {sorted(known)}, got {sorted(routes['approach_paths'])}"
+      )
     return routes
 
   def _get_stage_calibration(self) -> Dict[str, Any]:
@@ -968,7 +990,7 @@ class MantisDriver:
 
     Raises:
       MantisConfigurationError: if the ``plate_clamp``, ``led_bar``, ``arm``, ``zones``,
-        ``stations`` or ``stage`` block is malformed.
+        ``approach_paths`` or ``stage`` block is malformed.
     """
     if self.configuration.firmware_versions.get(LC3_BOARD) is not None and self.plate_clamp is None:
       levels: Optional[Dict[int, Tuple[float, int]]] = None
@@ -1130,6 +1152,9 @@ class MantisDriver:
         if any(where in recordings for where in taken.values())
         else "",
       )
+    # A file saved before the approach paths were named holds them as "stations".
+    if "approach_paths" not in values and "stations" in values:
+      values["approach_paths"] = _get_approach_paths_from_stations(stations=values["stations"])
     self._unit_blocks = {block: values[block] for block in UNIT_BLOCKS if block in values}
     self._unit_blocks_from_recording = {
       block for block in UNIT_BLOCKS if taken.get(block) in recordings

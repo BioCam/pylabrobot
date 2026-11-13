@@ -20,11 +20,15 @@ COMMON_SEQUENCE_DIRECTORY = os.path.join("System", "Sequences", "Common")
 # The unit's zones, in the order it lists them; a head in none of them is in the Unknown zone.
 ZONES = ("Front", "RightBack", "RightMiddle", "RightFront", "LeftBack", "LeftMiddle", "LeftFront")
 UNKNOWN_ZONE = "Unknown"
-# The waste station's route on a v4, and on a v3: every unit seen has both, two different routes.
-WASTE_STATION_FILE = "MoveToWasteStation.seq.txt"
-WASTE_STATION_ADAPTER_FILE = "MoveToWasteStation_Adapter.seq.txt"
-WASH_STATION_FILE = "MoveToWashStation{station}.seq.txt"
-WASH_STATIONS = (1, 2)
+# The vendor's approach path to the waste on a v4, and on a v3: every unit seen has both files.
+WASTE_APPROACH_PATH_FILE = "MoveToWasteStation.seq.txt"
+WASTE_APPROACH_PATH_ADAPTER_FILE = "MoveToWasteStation_Adapter.seq.txt"
+# The vendor's approach path to each wash position, by number.
+WASH_APPROACH_PATH_FILE = "MoveToWashStation{position}.seq.txt"
+WASH_POSITIONS = (1, 2)
+# The approach paths' names: the waste, and each wash position.
+WASTE_APPROACH_PATH = "waste"
+WASH_APPROACH_PATH = "wash_{position}"
 # Where an install keeps the plate holder's origin, from its ``Data/Device`` folder.
 SBS_ADAPTER_FILE = os.path.join("Adapters", "SBS Adapter.ad.txt")
 # The stage tuning file in the unit's configuration folder: its ReferenceHeight.
@@ -258,29 +262,26 @@ def _load_zones(*, path: str, sequence_directory: str) -> Dict[str, Any]:
   return {"rectangles": rectangles, **routes}
 
 
-def _load_stations(*, sequence_directory: str, waste_station_file: str) -> Dict[str, Any]:
-  """The ``stations`` block: the routes to the waste station and to each wash station, from idle;
-  only those whose file exists.
+def _load_approach_paths(*, sequence_directory: str, waste_file: str) -> Dict[str, Any]:
+  """The ``approach_paths`` block: the vendor's path from idle to the waste and to each wash
+  position, by name (``WASTE_APPROACH_PATH``, ``WASH_APPROACH_PATH``); only those whose file exists.
 
   Args:
     sequence_directory: the unit's ``System/Sequences/Common``.
-    waste_station_file: ``WASTE_STATION_FILE`` on a v4, ``WASTE_STATION_ADAPTER_FILE`` on a v3.
+    waste_file: ``WASTE_APPROACH_PATH_FILE`` on a v4, ``WASTE_APPROACH_PATH_ADAPTER_FILE`` on a v3.
 
   Raises:
-    MantisConfigurationError: if a route is malformed or moves nothing.
+    MantisConfigurationError: if a path is malformed or moves nothing.
   """
-  stations: Dict[str, Any] = {}
-  path = os.path.join(sequence_directory, waste_station_file)
+  paths: Dict[str, Any] = {}
+  path = os.path.join(sequence_directory, waste_file)
   if os.path.isfile(path):
-    stations["waste"] = _parse_route(path=path)
-  wash = {}
-  for station in WASH_STATIONS:
-    path = os.path.join(sequence_directory, WASH_STATION_FILE.format(station=station))
+    paths[WASTE_APPROACH_PATH] = _parse_route(path=path)
+  for position in WASH_POSITIONS:
+    path = os.path.join(sequence_directory, WASH_APPROACH_PATH_FILE.format(position=position))
     if os.path.isfile(path):
-      wash[str(station)] = _parse_route(path=path)
-  if wash:
-    stations["wash"] = wash
-  return stations
+      paths[WASH_APPROACH_PATH.format(position=position)] = _parse_route(path=path)
+  return paths
 
 
 def _load_unit_configuration(*, oem_config_directory: str) -> Dict[str, Any]:
@@ -296,9 +297,9 @@ def _load_unit_configuration(*, oem_config_directory: str) -> Dict[str, Any]:
   is set (a v4). Motor 0 is ``Motor.1`` there.
   ``zones``: ``DeviceZone.config``'s rectangles and each zone's routes to safe XY and to idle,
   from the unit's ``System/Sequences/Common``, only where that file exists (a v4).
-  ``stations``: the routes from idle to the waste station and to wash stations 1 and 2, from the
-  same folder, those that exist; the waste station's ``WASTE_STATION_FILE`` where
-  ``DeviceZone.config`` exists (a v4), else ``WASTE_STATION_ADAPTER_FILE`` (a v3).
+  ``approach_paths``: the vendor's paths from idle to the waste and to wash positions 1 and 2, from
+  the same folder, those that exist; the waste's ``WASTE_APPROACH_PATH_FILE`` where
+  ``DeviceZone.config`` exists (a v4), else ``WASTE_APPROACH_PATH_ADAPTER_FILE`` (a v3).
   ``stage``: ``Device.config``'s ``MicroplateTransformationMatrix``, ``MicroplateOffsetX/Y`` and
   ``ArmType*``, and the plate holder's origin from ``Data/Device/Adapters/SBS Adapter.ad.txt``,
   only where ``Device.config`` sets the matrix.
@@ -419,10 +420,10 @@ def _load_unit_configuration(*, oem_config_directory: str) -> Dict[str, Any]:
   is_v4 = os.path.isfile(zone_config)
   if is_v4:
     blocks["zones"] = _load_zones(path=zone_config, sequence_directory=sequence_directory)
-  stations = _load_stations(
+  approach_paths = _load_approach_paths(
     sequence_directory=sequence_directory,
-    waste_station_file=WASTE_STATION_FILE if is_v4 else WASTE_STATION_ADAPTER_FILE,
+    waste_file=WASTE_APPROACH_PATH_FILE if is_v4 else WASTE_APPROACH_PATH_ADAPTER_FILE,
   )
-  if stations:
-    blocks["stations"] = stations
+  if approach_paths:
+    blocks["approach_paths"] = approach_paths
   return blocks

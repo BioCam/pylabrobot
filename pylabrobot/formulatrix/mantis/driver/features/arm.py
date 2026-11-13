@@ -47,7 +47,13 @@ from ..errors import (
 )
 from ..events import HOME_DONE_EVENT, decode_home_done
 from ..framing import MOTION_BOARD
-from ..oem_config import UNKNOWN_ZONE, WASH_STATIONS, ZONES
+from ..oem_config import (
+  UNKNOWN_ZONE,
+  WASH_APPROACH_PATH,
+  WASH_POSITIONS,
+  WASTE_APPROACH_PATH,
+  ZONES,
+)
 from ..sequence_files import Waypoint
 from ..stage_transform import compute_arm_frame_position
 
@@ -114,6 +120,9 @@ DECK_FIT_SPACING = 5.0
 # How far outside the plate holder, mm, a point read back through the inverted stage transform may
 # land and still count as on it: rounding only.
 HOLDER_EDGE_TOLERANCE = 1e-6
+# PyLabRobot design choice: how close, mm, the head must stand to a waypoint below the safe height on
+# an approach path, in x, y and Z, to count as on that path.
+APPROACH_PATH_TOLERANCE = 0.5
 
 JointState = Dict[int, float]
 """Where each motor is, by motor: 0 and 1 in degrees, 2 (Z) in mm down from its flag."""
@@ -123,7 +132,8 @@ JointState = Dict[int, float]
 class MantisArmConfiguration:
   """The arm's facts, read at setup, and the unit's calibration, from its folder or declared file.
 
-  Each calibration value is None without its block (``arm``, ``zones``, ``stations``, ``stage``).
+  Each calibration value is None without its block (``arm``, ``zones``, ``approach_paths``,
+  ``stage``).
   """
 
   motor_limits: Dict[int, Tuple[float, float]] = dataclasses.field(default_factory=dict)
@@ -140,10 +150,9 @@ class MantisArmConfiguration:
   """Each zone's route to its safe XY, the arms only, by name; Unknown included."""
   idle_routes: Optional[Dict[str, List[Waypoint]]] = None
   """Each zone's route to idle, by name; Unknown included."""
-  waste_station_route: Optional[List[Waypoint]] = None
-  """The route from idle to the waste station."""
-  wash_station_routes: Optional[Dict[int, List[Waypoint]]] = None
-  """The route from idle to each wash station, by number."""
+  approach_paths: Optional[Dict[str, List[Waypoint]]] = None
+  """The vendor's path from idle to each place it serves, by name: ``"waste"``, ``"wash_1"``,
+  ``"wash_2"``; arm frame, Z mm down from its flag, an axis left out held."""
   stage_origin: Optional[Tuple[float, float, float]] = None
   """The plate holder's origin, (x, y, z), mm."""
   stage_transformation_matrix: Optional[Sequence[Sequence[float]]] = None
@@ -185,9 +194,9 @@ class Arm:
 
   Bringing it up needs the unit's ``arm`` block: each arm motor's offset, encoder reference and
   encoder correction. Without it nothing is sent and ``initialize`` refuses; it never falls back to
-  another unit's values. The ``zones`` and ``stations`` blocks give the routes; without them the
-  head is moved to idle only from near it, and the stations refuse. Without the ``stage`` block the
-  deck-frame moves and ``request_pose`` refuse. Routes (bring-up, park, the stations, stop) move at the
+  another unit's values. The ``zones`` and ``approach_paths`` blocks give the routes; without them
+  the head is moved to idle only from near it, and the waste and the washes refuse. Without the ``stage`` block the
+  deck-frame moves and ``request_pose`` refuse. Routes (bring-up, park, the approach paths, stop) move at the
   ``ROUTE_*`` profile; the other moves take the arms at it unless an xy speed is given.
 
   The public moves take the nozzle in the deck frame, mm, and its speed in mm/s; a joint state
@@ -216,8 +225,6 @@ class Arm:
     self._initialized = False
     self._pose_observer: Optional[Callable[..., None]] = None
     self._deck_to_arm_transform: Optional[Tuple[float, float, float]] = None
-    # The route of the station the head stands in, until it leaves.
-    self._station_route: Optional[List[Waypoint]] = None
 
   @property
   def is_initialized(self) -> bool:
@@ -1223,7 +1230,6 @@ class Arm:
     """
     self._check_calibrated()
     self._initialized = False
-    self._station_route = None
     try:
       for motor in ARM_MOTORS:
         await self._unchecked_fw_set_motor_open_loop(motor=motor, open_loop=False)
@@ -1254,7 +1260,6 @@ class Arm:
     self._check_calibrated()
     self._check_initialized()
     self._initialized = False
-    self._station_route = None
     try:
       for motor in (*ARM_MOTORS, Z_MOTOR):
         await self._unchecked_fw_stop(
@@ -1339,12 +1344,105 @@ class Arm:
       minimum_traverse_height=minimum_traverse_height, points=points
     )
 
-  def _check_not_in_station(self) -> None:
-    """Raise ``MantisMotionError`` while the head stands in a station: it leaves only by park()."""
-    if self._station_route is not None:
-      raise MantisMotionError(
-        f"{self._driver.name}: the head stands in a station; park() takes it out the way it came"
-      )
+  def _get_approach_path_states(self, *, path: List[Waypoint]) -> List[Tuple[float, float, float]]:
+    """Where each line of an approach path leaves the head: arm-frame x and y, mm, and Z, mm down
+    from its flag; an axis a line leaves out kept from the line before, from idle with Z at its
+    flag."""
+    x, y, z = POST_HOMING_POSITION[0], POST_HOMING_POSITION[1], 0.0
+    states = []
+    for line_x, line_y, line_z in path:
+      if line_x is not None and line_y is not None:
+        x, y = line_x, line_y
+      if line_z is not None:
+        z = line_z
+      states.append((x, y, z))
+    return states
+
+  def _get_place(self, *, joint_state: JointState) -> Optional[Tuple[str, int]]:
+    """The approach path, by name, and its line the head stands at, if it stands at a line of one's
+    descended part (after the path's last line at the safe height), within
+    ``APPROACH_PATH_TOLERANCE``; None in the open. Of lines the head matches on several paths, the
+    deepest along its path is taken.
+
+    Args:
+      joint_state: where the motors stand, as ``request_joint_state`` reads them.
+    """
+    x, y = self._get_head_position(joint_state=joint_state)
+    z = joint_state[Z_MOTOR]
+    place: Optional[Tuple[str, int]] = None
+    for name, path in (self.configuration.approach_paths or {}).items():
+      states = self._get_approach_path_states(path=path)
+      at_safe_height = [
+        index
+        for index, (_, _, line_z) in enumerate(states)
+        if line_z <= APPROACH_PATH_TOLERANCE - SAFE_HEIGHT
+      ]
+      if not at_safe_height:
+        continue
+      for index in range(at_safe_height[-1] + 1, len(states)):
+        line_x, line_y, line_z = states[index]
+        near = (
+          math.hypot(x - line_x, y - line_y) <= APPROACH_PATH_TOLERANCE
+          and abs(z - line_z) <= APPROACH_PATH_TOLERANCE
+        )
+        if near and (place is None or index > place[1]):
+          place = (name, index)
+    return place
+
+  @staticmethod
+  def _get_shared_length(*, first: List[Waypoint], second: List[Waypoint]) -> int:
+    """How many lines two approach paths share from their start."""
+    count = 0
+    for line, other in zip(first, second):
+      if line != other:
+        break
+      count += 1
+    return count
+
+  async def _leave_approach_path(self, *, name: str, index: int, until: int) -> None:
+    """Move the head back along an approach path from the line it stands at to an earlier line,
+    one queued move per step, at the route profile, as the vendor leaves the waste: where a line
+    moves the arms and Z, the arms first at the height the head stands, then Z.
+
+    Args:
+      name: the approach path's name.
+      index: the line the head stands at.
+      until: the line to stop at, 0 the path's start.
+    """
+    assert self.configuration.approach_paths is not None
+    states = self._get_approach_path_states(path=self.configuration.approach_paths[name])
+    x, y, z = states[index]
+    steps: List[Waypoint] = []
+    for target_x, target_y, target_z in reversed(states[until:index]):
+      if (target_x, target_y) != (x, y):
+        steps.append((target_x, target_y, None))
+      if target_z != z:
+        steps.append((None, None, target_z))
+      x, y, z = target_x, target_y, target_z
+    profiles = self._get_route_profiles()
+    await self._play_queued_moves(
+      moves=[
+        self._get_queued_move(targets=targets, profiles=profiles)
+        for targets in self._get_route_targets(route=steps)
+      ]
+    )
+
+  async def _leave_approach_path_if_on_one(self, *, joint_state: JointState) -> JointState:
+    """Move the head out to the start of the approach path it stands on, if it stands on one, and
+    return where the motors stand then; else return ``joint_state`` as it is.
+
+    Args:
+      joint_state: where the motors stand, as ``request_joint_state`` reads them.
+    """
+    place = self._get_place(joint_state=joint_state)
+    if place is None:
+      return joint_state
+    name, index = place
+    logger.info(
+      "[%s] the head stands on the %s approach path; it leaves along it", self._driver.name, name
+    )
+    await self._leave_approach_path(name=name, index=index, until=0)
+    return await self.request_joint_state()
 
   def _get_arm_profiles(
     self,
@@ -1415,14 +1513,12 @@ class Arm:
     Raises:
       MantisConfigurationError: for a traverse height in the deck frame without the unit's
         ``stage`` block; nothing is sent.
-      MantisMotionError: if the arm is not brought up, the head stands in a station, a motor
-        faults, or Z does not read at the traverse height after rising to it.
+      MantisMotionError: if the arm is not brought up, a motor faults, or Z does not read at the traverse height after rising to it.
       MantisKinematicsError: if the links cannot meet at the arm motors' targets.
       ValueError: if a motor is unknown, a target outside its limits, or a speed or acceleration
         out of range.
     """
     self._check_initialized()
-    self._check_not_in_station()
     unknown = set(joint_state) - {*ARM_MOTORS, Z_MOTOR}
     if unknown:
       raise ValueError(f"the motors are {(*ARM_MOTORS, Z_MOTOR)}, got {sorted(unknown)}")
@@ -1437,13 +1533,13 @@ class Arm:
     for motor, target in targets.items():
       self._check_reachable(motor=motor, position=target)
     arm_targets = {motor: target for motor, target in targets.items() if motor in ARM_MOTORS}
+    start = await self._leave_approach_path_if_on_one(joint_state=await self.request_joint_state())
     if not arm_targets:
       await self._play_queued_moves(
         moves=[self._get_queued_move(targets=targets, profiles={Z_MOTOR: z_profile})]
       )
       await self._report_pose()
       return
-    start = await self.request_joint_state()
     end = {**start, **joint_state}
     self._get_head_position(joint_state=end)
     if minimum_traverse_height_start is None:
@@ -1493,14 +1589,12 @@ class Arm:
 
     Raises:
       MantisConfigurationError: without the unit's ``arm`` or ``stage`` block; nothing is sent.
-      MantisMotionError: if the arm is not brought up, the head stands in a station, a motor
-        faults, or Z does not read at the traverse height after rising to it.
+      MantisMotionError: if the arm is not brought up, a motor faults, or Z does not read at the traverse height after rising to it.
       MantisKinematicsError: if (x, y) is out of the arm's reach.
       ValueError: if a target is outside its motor's limits, or a speed or acceleration out of
         range.
     """
     self._check_initialized()
-    self._check_not_in_station()
     arm_x, arm_y = self._get_arm_frame_xy(x=x, y=y)
     targets = self._get_arm_targets(x=arm_x, y=arm_y)
     await self.move_to_joint_state(
@@ -1526,22 +1620,26 @@ class Arm:
 
     Raises:
       MantisConfigurationError: without the unit's ``arm`` or ``stage`` block; nothing is sent.
-      MantisMotionError: if the arm is not brought up, the head stands in a station, or Z faults.
+      MantisMotionError: if the arm is not brought up, or Z faults.
       MantisKinematicsError: if the links cannot meet at the angles read.
       ValueError: if the target is outside Z's limits, or a speed or acceleration out of range.
     """
     self._check_initialized()
-    self._check_not_in_station()
     self._check_stage()
-    self._get_profile(motor=Z_MOTOR, speed=speed, acceleration=acceleration)
-    joint_state = await self.request_joint_state()
+    z_profile = self._get_profile(motor=Z_MOTOR, speed=speed, acceleration=acceleration)
+    joint_state = await self._leave_approach_path_if_on_one(
+      joint_state=await self.request_joint_state()
+    )
     head_x, head_y = self._get_head_position(joint_state=joint_state)
     x, y = self._get_deck_frame_xy(x=head_x, y=head_y)
-    await self.move_to_joint_state(
-      joint_state={Z_MOTOR: self._get_z_joint_position(x=x, y=y, z=z)},
-      z_speed=speed,
-      z_acceleration=acceleration,
+    target = compute_device_position(
+      motor=Z_MOTOR, position=self._get_z_joint_position(x=x, y=y, z=z)
     )
+    self._check_reachable(motor=Z_MOTOR, position=target)
+    await self._play_queued_moves(
+      moves=[self._get_queued_move(targets={Z_MOTOR: target}, profiles={Z_MOTOR: z_profile})]
+    )
+    await self._report_pose()
 
   async def move_to_location(
     self,
@@ -1571,14 +1669,12 @@ class Arm:
 
     Raises:
       MantisConfigurationError: without the unit's ``arm`` or ``stage`` block; nothing is sent.
-      MantisMotionError: if the arm is not brought up, the head stands in a station, a motor
-        faults, or Z does not read at the traverse height after rising to it.
+      MantisMotionError: if the arm is not brought up, a motor faults, or Z does not read at the traverse height after rising to it.
       MantisKinematicsError: if the location is out of the arm's reach.
       ValueError: if a target is outside its motor's limits, or a speed or acceleration out of
         range.
     """
     self._check_initialized()
-    self._check_not_in_station()
     self._check_stage()
     z_profile = self._get_profile(motor=Z_MOTOR, speed=z_speed, acceleration=z_acceleration)
     for name, value in (("xy_speed", xy_speed), ("xy_acceleration", xy_acceleration)):
@@ -1592,7 +1688,7 @@ class Arm:
       (Z_MOTOR, compute_device_position(motor=Z_MOTOR, position=z_target)),
     ):
       self._check_reachable(motor=motor, position=target)
-    start = await self.request_joint_state()
+    start = await self._leave_approach_path_if_on_one(joint_state=await self.request_joint_state())
     head_x, head_y = self._get_head_position(joint_state=start)
     traverse = self._get_traverse_z_joint_position(
       minimum_traverse_height=minimum_traverse_height_start,
@@ -1636,36 +1732,9 @@ class Arm:
     )
     await self._move_along_route(steps=steps)
 
-  async def _leave_station(self) -> None:
-    """Take the head out of the station it stands in along its route played backwards, one queued
-    move per line, as the vendor leaves: a line that moves the arms and Z moves the arms first, at
-    the height the head stands, then Z.
-
-    Raises:
-      MantisMotionError: if a motor faults.
-    """
-    route = self._station_route
-    if route is None:
-      return
-    steps: List[Waypoint] = []
-    for x, y, z in reversed(route[:-1]):
-      if x is not None and y is not None:
-        steps.append((x, y, None))
-      if z is not None:
-        steps.append((None, None, z))
-    profiles = self._get_route_profiles()
-    await self._play_queued_moves(
-      moves=[
-        self._get_queued_move(targets=targets, profiles=profiles)
-        for targets in self._get_route_targets(route=steps)
-        if targets
-      ]
-    )
-    self._station_route = None
-
   async def park(self, *, minimum_traverse_height_start: Optional[float] = None) -> None:
-    """Move the head to idle along its zone's route, from any zone; from a station, first out of
-    it the way it came.
+    """Move the head to idle along its zone's route, from any zone; from an approach path, first out
+    along it.
 
     The head first rises to the traverse height if it is below it. Without the unit's zones it is
     parked from near idle only.
@@ -1681,65 +1750,78 @@ class Arm:
       ValueError: if the traverse height is outside Z's limits.
     """
     self._check_initialized()
-    await self._leave_station()
+    await self._leave_approach_path_if_on_one(joint_state=await self.request_joint_state())
     traverse = await self._get_park_traverse_z_joint_position(
       minimum_traverse_height=minimum_traverse_height_start
     )
     await self._route_to_idle(z_joint_position=traverse)
     await self._report_pose()
 
-  async def _move_to_station(self, *, name: str, route: Optional[List[Waypoint]]) -> None:
-    """Play a station's route from idle, one queued move per line, the axes it leaves out held.
+  async def _move_along_approach_path(self, *, name: str) -> None:
+    """Move the head to the end of an approach path, from wherever it stands.
+
+    On that path, onward from where it stands. On another, back along it to the last line the two
+    share, the arms first at depth, then along this one from there: from one wash position to the
+    other the head stays in the wash. In the open, to idle first as ``park`` takes it, then along
+    the path from its start. Where the head stands is read from the motors, never remembered.
 
     Raises:
-      MantisConfigurationError: without the route.
-      MantisMotionError: if the arm is not brought up, not parked or in a station, or a motor
-        faults.
+      MantisConfigurationError: without the path; nothing moves.
+      MantisMotionError: if the arm is not brought up, a motor faults, or Z does not read at the
+        traverse height after rising.
     """
     self._check_initialized()
-    self._check_not_in_station()
-    if route is None:
+    paths = self.configuration.approach_paths or {}
+    path = paths.get(name)
+    if path is None:
       raise MantisConfigurationError(
-        f"{self._driver.name}: no route to the {name} for this unit; give its configuration folder "
-        "(oem_config_directory) or a configuration saved with it"
+        f"{self._driver.name}: no approach path to the {name} for this unit; give its "
+        "configuration folder (oem_config_directory) or a configuration saved with it"
       )
     profiles = self._get_route_profiles()
+    self._get_route_targets(route=path)  # every line checked before anything moves
+    place = self._get_place(joint_state=await self.request_joint_state())
+    if place is not None and place[0] == name:
+      start = place[1] + 1
+    elif place is not None:
+      shared = self._get_shared_length(first=paths[place[0]], second=path)
+      await self._leave_approach_path(name=place[0], index=place[1], until=max(shared - 1, 0))
+      start = shared
+    else:
+      if not await self.request_is_parked():
+        await self.park()
+      start = 0
     moves = [
       self._get_queued_move(targets=targets, profiles=profiles)
-      for targets in self._get_route_targets(route=route)
+      for targets in self._get_route_targets(route=path[start:])
     ]
-    if not await self.request_is_parked():
-      raise MantisMotionError(
-        f"{self._driver.name}: the route to the {name} starts at idle; park() first"
-      )
-    self._station_route = route  # a move that fails part way leaves along it too
     await self._play_queued_moves(moves=moves)
     await self._report_pose()
 
-  async def move_to_waste_station(self) -> None:
-    """Move the head from idle into the waste station along the unit's route.
+  async def move_to_waste(self) -> None:
+    """Move the head into the waste along the unit's approach path, from wherever it stands.
 
     Raises:
-      MantisConfigurationError: without the unit's route; nothing moves.
-      MantisMotionError: if the arm is not brought up or the head not at idle, or a motor faults.
+      MantisConfigurationError: without the unit's approach path; nothing moves.
+      MantisMotionError: if the arm is not brought up, or a motor faults.
     """
-    await self._move_to_station(name="waste station", route=self.configuration.waste_station_route)
+    await self._move_along_approach_path(name=WASTE_APPROACH_PATH)
 
-  async def move_to_wash_station(self, *, station: int) -> None:
-    """Move the head from idle into a wash station along the unit's route.
+  async def move_to_wash(self, *, position: int) -> None:
+    """Move the head into a wash position along the unit's approach path, from wherever it stands;
+    from the other wash position without leaving the wash.
 
     Args:
-      station: 1 or 2.
+      position: 1 or 2.
 
     Raises:
-      MantisConfigurationError: without the unit's route; nothing moves.
-      MantisMotionError: if the arm is not brought up or the head not at idle, or a motor faults.
-      ValueError: if ``station`` is not 1 or 2.
+      MantisConfigurationError: without the unit's approach path; nothing moves.
+      MantisMotionError: if the arm is not brought up, or a motor faults.
+      ValueError: if ``position`` is not 1 or 2.
     """
-    if station not in WASH_STATIONS:
-      raise ValueError(f"station must be one of {WASH_STATIONS}, got {station}")
-    routes = self.configuration.wash_station_routes or {}
-    await self._move_to_station(name=f"wash station {station}", route=routes.get(station))
+    if position not in WASH_POSITIONS:
+      raise ValueError(f"position must be one of {WASH_POSITIONS}, got {position}")
+    await self._move_along_approach_path(name=WASH_APPROACH_PATH.format(position=position))
 
   async def _park(self) -> None:
     """Park at idle and lower Z to ``SHUTDOWN_Z``, as in the recorded close.
@@ -1760,7 +1842,7 @@ class Arm:
     z_up = self._get_waypoint_targets(waypoint=(None, None, 0.0))
     z_down = self._get_waypoint_targets(waypoint=(None, None, SHUTDOWN_Z))
     await self._wait_for_motors_idle(timeout=MOVE_TIMEOUT)
-    await self._leave_station()
+    await self._leave_approach_path_if_on_one(joint_state=await self.request_joint_state())
     try:
       self._check_near_idle(joint_state=await self.request_absolute_joint_state())
     except MantisMotionError:

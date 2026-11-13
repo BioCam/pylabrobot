@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from typing import Tuple
+from unittest import mock
 
 from pylabrobot.formulatrix.mantis import Mantis
 from pylabrobot.formulatrix.mantis.device import RECORDING_MANTIS_V4
@@ -19,8 +20,10 @@ from pylabrobot.formulatrix.mantis.driver.errors import (
 from pylabrobot.formulatrix.mantis.driver.features.arm import SHUTDOWN_Z
 from pylabrobot.formulatrix.mantis.driver.master import SEQUENCER_QUEUE_SIZE
 from pylabrobot.formulatrix.mantis.driver.oem_config_tests import (
+  SYNTHETIC_APPROACH_PATHS_BLOCK,
   SYNTHETIC_STAGE_BLOCK,
-  SYNTHETIC_STATIONS_BLOCK,
+  SYNTHETIC_WASH_2_ROUTE,
+  SYNTHETIC_WASH_ROUTE,
   SYNTHETIC_WASTE_ROUTE,
   SYNTHETIC_ZONES_BLOCK,
 )
@@ -258,7 +261,7 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SimulatedRouteTests(unittest.IsolatedAsyncioTestCase):
-  """A simulated Mantis declaring the unit's zones and stations, synthetic."""
+  """A simulated Mantis declaring the unit's zones and approach paths, synthetic."""
 
   async def asyncSetUp(self):
     with open(RECORDING_MANTIS_V4, encoding="utf-8") as f:
@@ -271,7 +274,7 @@ class SimulatedRouteTests(unittest.IsolatedAsyncioTestCase):
         {
           **recording,
           "zones": SYNTHETIC_ZONES_BLOCK,
-          "stations": SYNTHETIC_STATIONS_BLOCK,
+          "approach_paths": SYNTHETIC_APPROACH_PATHS_BLOCK,
           "stage": SYNTHETIC_STAGE_BLOCK,
         },
         f,
@@ -309,18 +312,41 @@ class SimulatedRouteTests(unittest.IsolatedAsyncioTestCase):
     await self.arm.move_to_joint_state(joint_state={2: 5.0})
     self.assertEqual((await self.arm.request_joint_state())[2], 5.0)
 
-  async def test_the_waste_station_is_reached_from_idle_only(self):
-    await self.arm.move_to_waste_station()
-    x, y, z = SYNTHETIC_WASTE_ROUTE[-1]
+  async def assert_at_end_of(self, *, path) -> None:
+    x, y, z = path[-1]
     assert x is not None and y is not None and z is not None
     await self.assert_head_at(x=x, y=y, z=-z)
-    with self.assertRaisesRegex(MantisMotionError, "park"):
-      await self.arm.move_to_wash_station(station=1)
+
+  async def test_the_waste_and_each_wash_are_reached_from_wherever_the_head_stands(self):
+    await self.arm.move_to_waste()
+    await self.assert_at_end_of(path=SYNTHETIC_WASTE_ROUTE)
+    # From the waste: out along its path to its start, then in along the wash's.
+    await self.arm.move_to_wash(position=1)
+    await self.assert_at_end_of(path=SYNTHETIC_WASH_ROUTE)
+    # From one wash to the other: back only to the last line the two paths share.
+    with mock.patch.object(
+      self.arm, "_leave_approach_path", wraps=self.arm._leave_approach_path
+    ) as leave:
+      await self.arm.move_to_wash(position=2)
+    leave.assert_awaited_once_with(name="wash_1", index=len(SYNTHETIC_WASH_ROUTE) - 1, until=3)
+    await self.assert_at_end_of(path=SYNTHETIC_WASH_2_ROUTE)
     await self.arm.park()
-    await self.arm.move_to_wash_station(station=1)
+    self.assertTrue(await self.arm.request_is_parked())
+    with self.assertRaisesRegex(ValueError, "position must be one of"):
+      await self.arm.move_to_wash(position=3)
+
+  async def test_a_move_from_the_waste_leaves_along_its_path_first(self):
+    # Where the head stands is read from the motors: nothing is remembered between moves.
+    await self.arm.move_to_waste()
+    with mock.patch.object(
+      self.arm, "_leave_approach_path", wraps=self.arm._leave_approach_path
+    ) as leave:
+      await self.move_head_to(x=-57.0, y=0.0)
+    leave.assert_awaited_once_with(name="waste", index=len(SYNTHETIC_WASTE_ROUTE) - 1, until=0)
+    await self.assert_head_at(x=-57.0, y=0.0, z=1.57)
 
   async def test_stop_from_a_back_zone_parks_along_its_route_and_lowers_z(self):
-    await self.arm.move_to_waste_station()
+    await self.arm.move_to_waste()
     await self.mantis.stop()
     self.assertAlmostEqual(
       self.arm._positions[2], compute_device_position(motor=2, position=SHUTDOWN_Z)

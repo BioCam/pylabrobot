@@ -55,10 +55,11 @@ from pylabrobot.formulatrix.mantis.driver.master_tests import (
   make_answers,
 )
 from pylabrobot.formulatrix.mantis.driver.oem_config_tests import (
+  SYNTHETIC_APPROACH_PATHS_BLOCK,
   SYNTHETIC_IDLE_ROUTES,
   SYNTHETIC_SAFE_XY,
   SYNTHETIC_STAGE_BLOCK,
-  SYNTHETIC_STATIONS_BLOCK,
+  SYNTHETIC_WASH_ROUTE,
   SYNTHETIC_WASTE_ROUTE,
   SYNTHETIC_ZONES_BLOCK,
 )
@@ -558,6 +559,8 @@ class StopTests(ArmTestCase):
     for motor in (0, 1, 2):
       key = struct.pack("<h", motor)
       link.answers[(0, 20, key)] = [bytes.fromhex(STATUS_IDLE)]
+      # Where the controller holds each motor, read first: whether the head is on an approach path.
+      link.answers[(0, 27, key)] = [bytes.fromhex(STARTUP_POSITION_REPLIES[motor][-1])]
       if motor in (0, 1):
         link.answers[(11, 30, key)] = [bytes.fromhex(STARTUP_ABSOLUTE_ENCODER_REPLIES[motor][-1])]
     for request in CLOSE_QUEUED_MOVES.values():
@@ -577,9 +580,11 @@ class StopTests(ArmTestCase):
     sent = self.sent(link)
     self.assertEqual(sent[:4], HALT)
     statuses = [(0, 20, struct.pack("<h", motor)) for motor in (0, 1, 2)]
+    positions = [(0, 27, struct.pack("<h", motor)) for motor in (0, 1, 2)]
     self.assertEqual(
-      sent[4:22],
+      sent[4:25],
       statuses
+      + positions
       + [(11, 30, struct.pack("<h", motor)) for motor in (0, 1)]
       # Z up on its own, read back by its encoder before the arms move.
       + [(0, 22, Z_UP_MOVE), (0, 20, b"\x02\x00")]
@@ -589,7 +594,7 @@ class StopTests(ArmTestCase):
       + [(0, 68, bytes.fromhex(CLOSE_QUEUED_MOVES[item])) for item in (14, 15)]
       + [(0, 61, b""), (0, 62, b""), (0, 68, bytes.fromhex(CLOSE_QUEUED_MOVES[16]))],
     )
-    self.assertEqual(sent[22][:2], (12, 33))
+    self.assertEqual(sent[25][:2], (12, 33))
     self.assertEqual(sent[-2:], TURN_OFF)
     self.assertFalse(driver.arm.is_initialized)
 
@@ -755,7 +760,7 @@ ARM_PROFILE = bytes.fromhex("b4a291808fb3b540814e1be8b40a8a40")
 # The same, as numbers: each arm motor's speed and acceleration in device units.
 ARM_PROFILE_SPEED, ARM_PROFILE_ACCELERATION = struct.unpack("<dd", ARM_PROFILE)
 Z_PROFILE = bytes.fromhex("4cd431fab7eaa040bb34be4f05c2be40")
-# A Mantis v4's own move to its waste station, queued: its first three items, a line naming no axis,
+# A Mantis v4's own move along its waste approach path, queued: its first three items, a line naming no axis,
 # the ready position with Z held, and Z alone to the safe height.
 RECORDED_WASTE_HOLD = (
   "710900000100000000000000000000000000000000000000000000000000000000000000000000000000000000"
@@ -858,7 +863,11 @@ def tokens(commands: List[Tuple[int, int, bytes]], *, without=(20,)) -> List[str
 
 class ZoneTests(ArmTestCase):
   async def set_up_routes(self, *, link: FakeLink, arm_block=SYNTHETIC_ARM_BLOCK, **blocks):
-    blocks = {"zones": SYNTHETIC_ZONES_BLOCK, "stations": SYNTHETIC_STATIONS_BLOCK, **blocks}
+    blocks = {
+      "zones": SYNTHETIC_ZONES_BLOCK,
+      "approach_paths": SYNTHETIC_APPROACH_PATHS_BLOCK,
+      **blocks,
+    }
     return await self.set_up_arm(link=link, arm_block=arm_block, **blocks)
 
   async def test_from_the_front_zone_the_recorded_startup_is_sent(self):
@@ -1089,7 +1098,11 @@ class MoveTests(ArmTestCase):
     driver = await self.set_up_moves(link=link)
     driver._next_item = 15
     await driver.arm.move_to_joint_state(joint_state={2: 0.0})
-    self.assertEqual(tokens(self.sent(link)), ["0:61:", "0:62:", f"0:68:{queued.hex()}"])
+    # Where it stands is read first (on an approach path, it would leave along it).
+    self.assertEqual(
+      tokens(self.sent(link)),
+      ["0:27:0000", "0:27:0100", "0:27:0200", "0:61:", "0:62:", f"0:68:{queued.hex()}"],
+    )
 
   async def test_a_queued_move_not_played_in_time_aborts_the_sequencer(self):
     link = RouteLink(answers=make_answers(), encoders={2: Z_UP_ENCODER_REPLY})
@@ -1098,8 +1111,8 @@ class MoveTests(ArmTestCase):
       with self.assertRaises(MantisTimeoutError):
         await driver.arm.move_to_joint_state(joint_state={2: 0.0})
     commands = [command for _, command, _ in self.sent(link)]
-    self.assertEqual(commands[:4], [61, 62, 68, 64])
-    self.assertEqual(commands[4:], [84, 84, 84])  # where the motors stopped, logged
+    self.assertEqual(commands[:7], [27, 27, 27, 61, 62, 68, 64])
+    self.assertEqual(commands[7:], [84, 84, 84])  # where the motors stopped, logged
 
   async def test_move_to_location_rises_moves_across_then_lowers(self):
     arms = get_queued_move(item=15, targets=DECK_POINT_ARM_TARGETS)
@@ -1296,7 +1309,7 @@ class PoseTests(ArmTestCase):
     link = self.make_z_up_link()
     driver = await self.set_up_pose(link=link)
     await driver.arm.move_to_joint_state(joint_state={2: 0.0})
-    sent = [command for command in self.sent(link) if command[1] != 20]
+    sent = [command for command in self.sent(link) if command[1] not in (20, 27)]
     self.assertEqual(sent[3:], [(0, 84, struct.pack("<h", motor)) for motor in (0, 1, 2)])
     pose = driver.arm._pose_observer.call_args.kwargs
     self.assertAlmostEqual(pose["theta_1"], IDLE_ANGLES[0])
@@ -1349,8 +1362,8 @@ class ParkTests(ArmTestCase):
     await driver.arm.park()
     sent = self.sent(link)
     self.assertEqual(
-      [(board, command) for board, command, _ in sent[:6]],
-      [(0, 20), (0, 20), (0, 20), (11, 30), (11, 30), (0, 84)],
+      [(board, command) for board, command, _ in sent[:9]],
+      [(0, 27)] * 3 + [(0, 20), (0, 20), (0, 20), (11, 30), (11, 30), (0, 84)],
     )
     moves = [payload for _, command, payload in sent if command == 22]
     self.assertEqual(moves, get_route_moves(route=SYNTHETIC_IDLE_ROUTES["LeftMiddle"]))
@@ -1418,11 +1431,11 @@ class ParkTests(ArmTestCase):
     self.assertEqual(self.sent(link), [])
 
 
-class StationTests(ArmTestCase):
-  async def set_up_stations(self, *, link: RouteLink, at_idle=True, **blocks):
+class ApproachPathTests(ArmTestCase):
+  async def set_up_approach_paths(self, *, link: RouteLink, at_idle=True, **blocks):
     link.set_absolute_readings(index=-1)
     link.answers[(0, 84, b"\x02\x00")] = [bytes.fromhex(Z_UP_ENCODER_REPLY)]
-    blocks = {"stations": SYNTHETIC_STATIONS_BLOCK, **blocks}
+    blocks = {"approach_paths": SYNTHETIC_APPROACH_PATHS_BLOCK, **blocks}
     arm_block = get_arm_block_at(x=15.0, y=31.177) if at_idle else get_away_arm_block()
     driver = await self.set_up_arm(link=link, arm_block=arm_block, **blocks)
     driver.arm._initialized = True
@@ -1439,15 +1452,15 @@ class StationTests(ArmTestCase):
       moves.append(get_queued_move(item=item, targets=targets))
     return moves
 
-  async def test_the_waste_station_route_is_queued_line_by_line(self):
+  async def test_from_idle_the_waste_path_is_queued_line_by_line(self):
     first_item = 16 - len(SYNTHETIC_WASTE_ROUTE) + 1
     expected = self.get_expected_waste_moves(first_item=first_item)
     link = RouteLink(
       answers=make_answers(), events={(0, 68, expected[-1]): [bytes.fromhex(CLOSE_ITEM_PLAYED[16])]}
     )
-    driver = await self.set_up_stations(link=link)
+    driver = await self.set_up_approach_paths(link=link)
     driver._next_item = first_item
-    await driver.arm.move_to_waste_station()
+    await driver.arm.move_to_waste()
     queued = [payload for _, command, payload in self.sent(link) if command == 68]
     self.assertEqual(queued, expected)
     # The line naming no axis and Z alone at the safe height, queued as recorded.
@@ -1460,38 +1473,29 @@ class StationTests(ArmTestCase):
     for index in (3, 6):
       self.assertAlmostEqual(sent[index], recorded[index], places=9)
 
-  async def test_a_station_route_starts_from_idle_only(self):
+  async def test_without_an_approach_path_nothing_moves(self):
     link = RouteLink(answers=make_answers())
-    driver = await self.set_up_stations(link=link, at_idle=False)
-    with self.assertRaisesRegex(MantisMotionError, "starts at idle; park"):
-      await driver.arm.move_to_waste_station()
-    self.assertNotIn(68, [command for _, command, _ in self.sent(link)])
-
-  async def test_a_station_without_a_route_refuses(self):
-    link = RouteLink(answers=make_answers())
-    driver = await self.set_up_stations(link=link, stations={"wash": {"1": []}})
-    with self.assertRaisesRegex(MantisConfigurationError, "no route to the waste station"):
-      await driver.arm.move_to_waste_station()
-    with self.assertRaisesRegex(MantisConfigurationError, "no route to the wash station 2"):
-      await driver.arm.move_to_wash_station(station=2)
-    with self.assertRaisesRegex(ValueError, "station must be one of"):
-      await driver.arm.move_to_wash_station(station=3)
+    driver = await self.set_up_approach_paths(
+      link=link, approach_paths={"wash_1": SYNTHETIC_WASH_ROUTE}
+    )
+    with self.assertRaisesRegex(MantisConfigurationError, "no approach path to the waste"):
+      await driver.arm.move_to_waste()
+    with self.assertRaisesRegex(MantisConfigurationError, "no approach path to the wash_2"):
+      await driver.arm.move_to_wash(position=2)
+    with self.assertRaisesRegex(ValueError, "position must be one of"):
+      await driver.arm.move_to_wash(position=3)
     self.assertEqual(self.sent(link), [])
 
-  async def test_park_from_the_waste_station_leaves_the_way_it_came(self):
-    # The route backwards from its last line; a line moving the arms and Z moves the arms first,
-    # at the depth the head stands, then Z, as the vendor leaves the waste station.
+  async def test_leaving_the_waste_goes_back_along_its_path_arms_first_at_depth(self):
+    # From the waste's last line back to its start: a line that moves the arms and Z moves the
+    # arms first, at the depth the head stands, then Z, as the vendor leaves the waste.
     way_out = [
-      (-60.0, 10.0, None),
-      (None, None, 30.0),
       (None, None, 30.0),
       (-50.0, 20.0, None),
       (None, None, -1.57),
-      (None, None, -1.57),
       (15.0, 30.0, None),
-      (None, None, -1.57),
-      (None, None, -1.57),
-      (15.0, 30.0, None),
+      (None, None, 0.0),
+      (15.0, 31.177, None),
     ]
     first_item = 16 - len(way_out) + 1
     expected = []
@@ -1503,29 +1507,40 @@ class StationTests(ArmTestCase):
     link = RouteLink(
       answers=make_answers(), events={(0, 68, expected[-1]): [bytes.fromhex(CLOSE_ITEM_PLAYED[16])]}
     )
-    driver = await self.set_up_stations(link=link)
-    driver.arm._station_route = [tuple(line) for line in SYNTHETIC_WASTE_ROUTE]
+    driver = await self.set_up_approach_paths(link=link)
     driver._next_item = first_item
-    await driver.arm._leave_station()
+    await driver.arm._leave_approach_path(
+      name="waste", index=len(SYNTHETIC_WASTE_ROUTE) - 1, until=0
+    )
     self.assertEqual(
       [payload for _, command, payload in self.sent(link) if command == 68], expected
     )
-    self.assertIsNone(driver.arm._station_route)
 
-  async def test_in_a_station_the_head_leaves_only_by_park(self):
-    link = RouteLink(answers=make_answers())
-    driver = await self.set_up_stations(link=link, stage=TRANSLATED_STAGE_BLOCK)
-    driver.arm._station_route = [tuple(line) for line in SYNTHETIC_WASTE_ROUTE]
-    for move in (
-      lambda: driver.arm.move_to_xy_position(x=DECK_POINT[0], y=DECK_POINT[1]),
-      lambda: driver.arm.move_to_z_position(z=REFERENCE_HEIGHT),
-      lambda: driver.arm.move_to_joint_state(joint_state={2: 0.0}),
-      lambda: driver.arm.move_to_location(location=Coordinate(*DECK_POINT, REFERENCE_HEIGHT)),
-      lambda: driver.arm.move_to_wash_station(station=1),
-    ):
-      with self.assertRaisesRegex(MantisMotionError, "stands in a station; park"):
-        await move()
-    self.assertEqual(self.sent(link), [])
+  def test_the_head_is_placed_on_a_path_by_where_it_stands(self):
+    arm = Arm(
+      driver=mock.Mock(),
+      configuration=MantisArmConfiguration(
+        offsets={0: 0.0, 1: 0.0},
+        homing_position_a=SYNTHETIC_HOMING_POSITION_A,
+        encoder_correction={0: [], 1: []},
+        approach_paths={
+          name: [(line[0], line[1], line[2]) for line in path]
+          for name, path in SYNTHETIC_APPROACH_PATHS_BLOCK.items()
+        },
+      ),
+    )
+
+    def joints_at(x: float, y: float, z: float) -> Dict[int, float]:
+      angles = compute_joint_angles(x=x, y=y)
+      return {0: angles[0], 1: angles[1], 2: z}
+
+    # At the waste's bottom, at its last line; at idle, or level with a waypoint above the safe
+    # height, in the open.
+    self.assertEqual(arm._get_place(joint_state=joints_at(-60.0, 10.0, 35.0)), ("waste", 8))
+    self.assertIsNone(arm._get_place(joint_state=joints_at(15.0, 31.177, 0.0)))
+    self.assertIsNone(arm._get_place(joint_state=joints_at(-50.0, 20.0, -1.57)))
+    # Off a waypoint by more than the tolerance, in the open too.
+    self.assertIsNone(arm._get_place(joint_state=joints_at(-60.0, 11.0, 35.0)))
 
 
 class StageDiscoveryTests(ArmTestCase):
@@ -1580,21 +1595,21 @@ class RouteDiscoveryTests(ArmTestCase):
     driver = await self.set_up_arm(
       link=FakeLink(answers=make_answers()),
       zones=SYNTHETIC_ZONES_BLOCK,
-      stations=SYNTHETIC_STATIONS_BLOCK,
+      approach_paths=SYNTHETIC_APPROACH_PATHS_BLOCK,
     )
-    self.assertEqual(driver.arm.configuration.wash_station_routes[1][0], (None, None, -1.57))
+    self.assertEqual(driver.arm.configuration.approach_paths["wash_1"][0], (None, None, -1.57))
     path = os.path.join(self.directory, "saved.json")
     driver.save_configuration(path=path)
     with open(path, encoding="utf-8") as f:
       saved = json.load(f)
     self.assertEqual(saved["zones"], SYNTHETIC_ZONES_BLOCK)
-    self.assertEqual(saved["stations"], SYNTHETIC_STATIONS_BLOCK)
+    self.assertEqual(saved["approach_paths"], SYNTHETIC_APPROACH_PATHS_BLOCK)
 
   async def test_a_malformed_route_block_refuses_setup(self):
     for blocks in (
       {"zones": {**SYNTHETIC_ZONES_BLOCK, "rectangles": {"Front": [0, 1, 0, 1]}}},
       {"zones": {**SYNTHETIC_ZONES_BLOCK, "safe_xy_routes": SYNTHETIC_IDLE_ROUTES}},
-      {"stations": {"wash": {"3": SYNTHETIC_WASTE_ROUTE}}},
+      {"approach_paths": {"wash_3": SYNTHETIC_WASTE_ROUTE}},
     ):
       with self.subTest(blocks=list(blocks)):
         driver = self.make_driver(

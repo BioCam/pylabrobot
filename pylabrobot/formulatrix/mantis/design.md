@@ -74,7 +74,7 @@ Each feature gets its own configuration when it is added, holding its own facts;
 configuration does not grow per feature, the calibration excepted, as discovery reads it with the
 firmware versions. The arm's is `MantisArmConfiguration` on `arm.configuration`, as the PF400's
 `PreciseFlexArmConfiguration`: the motor limits, read for it at setup, and the unit's `arm`, `zones`,
-`stations` and `stage` blocks. The motor limits are read at every setup and checked against every
+`approach_paths` and `stage` blocks. The motor limits are read at every setup and checked against every
 target, so they are not compared with a declared file; only the generation is fitted.
 
 **M4a. A unit's own values come from its folder or its declared file, else its generation's
@@ -90,16 +90,18 @@ folder the saved file alone carries them. A block is loaded only where its sourc
 `plate_clamp.levels` for a clamp driven as a DC motor, `rfid.slot_to_antenna` where `RFID.config`
 exists, `led_bar.number_of_leds` where `Device.config` sets `NumberOfLed`, `arm` where the unit
 declares the arms' absolute encoder references (a v4), its encoder correction from the `Data`
-folder; `zones` where the unit declares its zones (a v4), with each zone's routes, and `stations`,
-the routes to the waste and wash stations, from `System/Sequences/Common`; `stage` where the unit
+folder; `zones` where the unit declares its zones (a v4), with each zone's routes, and
+`approach_paths`, the vendor's paths from idle to the waste (`"waste"`) and to each wash position
+(`"wash_1"`, `"wash_2"`), from `System/Sequences/Common` (a file saved before they were named holds
+them as `stations`, read the same); `stage` where the unit
 declares its stage transform, with its tilt and arm type and the plate holder's origin from the
 `Data` folder.
 
 **M4d. Motion calibration never comes from a recording.** A block that calibrates motion
-(`MOTION_CALIBRATION_BLOCKS`: `arm`, `zones`, `stations`, `stage`) comes from the unit's folder or
+(`MOTION_CALIBRATION_BLOCKS`: `arm`, `zones`, `approach_paths`, `stage`) comes from the unit's folder or
 its declared file only; no recording holds one. Without it, nothing that needs it is sent: without
 `arm` `Arm.initialize` refuses, and so does `setup` unless `skip_arm=True`; without `zones` the head
-is moved to idle from near idle only; without `stations` a move to a station refuses; without
+is moved to idle from near idle only; without `approach_paths` a move to the waste or a wash refuses; without
 `stage` a move to a wellplate refuses. An arm type other than `Standard` is refused. A route file is
 read whole and refused on any line it does not understand, never skipped. Factory files (encoder
 corrections, taught sequences) are never committed; tests use synthetic tables.
@@ -225,11 +227,17 @@ distance, acceleration likewise: the motors start and end together, the move tak
 straight one would, and the nozzle's path is not straight. Without one, given or
 `default_xy_speed`/`default_xy_acceleration`, the arms take the vendor's motor profile, so the
 bytes match the recordings. `park` rises and reads Z back the same way, then follows the zone's
-route to idle. A station's route is queued line for line, as in the
-recorded move to the waste station, and starts only from idle (`request_is_parked`, Z read by its
-encoder). The head leaves a station only by `park`, along the route backwards, a line that moves the
-arms and Z moving the arms first at the depth it stands, as the vendor leaves the waste station;
-every other move refuses while it stands there.
+route to idle.
+
+`move_to_waste` and `move_to_wash(position=...)` follow the unit's approach paths, queued line for
+line as in the recorded move to the waste, from wherever the head stands, which is read from the
+motors, never remembered. A head on a path's descended part (after its last line at the safe
+height, within `APPROACH_PATH_TOLERANCE` of a line) is on that path. On the target's path it goes
+on from there; on another it goes back to the last line the two share, then forward: from one wash
+position to the other it stays in the wash, as the vendor's two paths share all but their ends. In
+the open it is parked first. Going back along a path, a line that moves the arms and Z moves the
+arms first at the depth the head stands, then Z, as the vendor leaves the waste. Every other move,
+and `park`, from a pose on a path first goes back along it to its start.
 
 **M9. Names say what kind of thing they are.** (STAR P10.)
 
@@ -285,7 +293,7 @@ above the wire: `MantisSimulationPlateClamp` reads 0 until a command sets clampi
 unclamping done; `MantisSimulationRfid` reads every slot empty; `MantisSimulationPump` reads off,
 every line at 0, with the recorded calibration; `MantisSimulationLedBar` takes every command and
 waits no hold. `MantisSimulationArm` stands at idle with its absolute encoders reading there, so it
-needs no encoder correction; its offsets are the declared ones, else 0, and its zones, stations and
+needs no encoder correction; its offsets are the declared ones, else 0, and its zones, approach paths and
 stage the declared ones, else none. Each command moves it at once, and the motor reads answer from
 it; without it the motors read idle at 0, as after power-on. A motor read the configuration does
 not hold is not simulated. The sequencer, on the driver, holds `SEQUENCER_QUEUE_SIZE` items,
@@ -304,7 +312,7 @@ master's links. Interface B carries the command frames; interface A, the RFID re
 builds the parts and holds the driver; a feature reaches the parts through the device, and moves
 keep them in step. A driver with no resource tree still drives. The Z column carries the arm's
 four links (`LinkBody`). The arm holds no resource: setup registers the device's
-`_update_arm_model` as the arm's `_pose_observer`, and after each move, park, station, recovery
+`_update_arm_model` as the arm's `_pose_observer`, and after each move, park, approach path, recovery
 and the stop's park the arm reads its three encoders (command 84) and passes the links' angles and
 Z's height to it; the column rises and falls with Z. A failed move passes where it stopped from the
 reads it logs. With no observer nothing more is read; a failed update only warns (STAR P8).
@@ -416,14 +424,15 @@ where a colour took a release from 0.21 s to 0.34 s on the recorded v4.
 33. **Zones that share an edge are tried in `ZONES` order.** A head on an edge goes to the first
     zone listed that holds it, in the order the unit lists its zones; the tie-break is not
     known.
-34. **None of the moves, routes or stations has run through this driver.** Their wire form matches
-    recorded exchanges: a recovery's routes as command 22 per motor, the waste station as queued
+34. **None of the moves, routes or approach paths has run through this driver.** Their wire form matches
+    recorded exchanges: a recovery's routes as command 22 per motor, the waste's path as queued
     moves line for line, each matched against a recording; a `park` from any zone also uses
     command 22, as the recovery does, since no park at a pause or a stop has been recorded.
-35. **`park` rises to the traverse height first, and a station starts from idle only.** Neither is
-    recorded: the recorded routes move X and Y at the height the head is at, and the recorded
-    station routes start with the arms' move to the ready position. Both are this driver's
-    guards, as STAR's park lifts before it travels.
+35. **`park` rises to the traverse height first, and an approach path is entered from idle, or
+    from the line it shares with the path the head is on.** Neither is recorded as a rule: the
+    recorded routes move X and Y at the height the head is at, and the recorded approach paths
+    start with the arms' move to the ready position. Both are this driver's guards, as STAR's park
+    lifts before it travels.
 36. **Z's speed and acceleration ranges are those of the recorded moves, not the device's.** The
     jog's 1 to 20 mm/s at 500 mm/s² and the routes' 55 mm/s at 200 mm/s² were accepted; the
     firmware refuses a speed or acceleration it will not take in the move's reply (5 or 6). Queued
@@ -431,10 +440,10 @@ where a colour took a release from 0.21 s to 0.34 s on the recorded v4.
 37. **`recover_from_fault` stops each motor at the vendor's acceleration.** In a recorded recovery
     each was stopped at the acceleration of its last move, which is the vendor's there; the order of
     stops, clears and declarations is the recorded one.
-38. **The waste station's route is the generation's own file.** Every unit seen has both
+38. **The waste's approach path is the generation's own file.** Every unit seen has both
     `MoveToWasteStation` and `MoveToWasteStation_Adapter`, two different routes: a unit with zones
     (a v4) reads the first, which a v4 played on the wire; one without them (a v3) reads the
-    second, not seen played, and a v3 builds no arm. The wash routes are
+    second, not seen played, and a v3 builds no arm. The wash paths are
     `MoveToWashStation1` and `2`; their `Lc3` variants are not read.
 39. **The resource model draws the arm where the manufacturer's model places it,** not where the
     fit puts it: on the unit the fit was checked on, about 2 mm off.
@@ -469,6 +478,7 @@ where a colour took a release from 0.21 s to 0.34 s on the recorded v4.
     move's reply; it took a far faster arm command than the vendor's, which then failed on its
     following error. Speeds in mm/s are scaled from the vendor's profile only when given, untested
     on a device.
-50. **The way out of a station is the route backwards,** as the cb protocol library driver plays it,
-    with the recorded split at depth for the waste station; a wash station's way out is not
-    recorded.
+50. **The way out along an approach path is the path backwards,** as the cb protocol library
+    driver plays it, with the recorded split at depth for the waste; a wash position's way out, and
+    the move from one wash position to the other, are not recorded. A head stopped between two
+    lines of a path is not placed on it: it is in the open, and rises straight up.

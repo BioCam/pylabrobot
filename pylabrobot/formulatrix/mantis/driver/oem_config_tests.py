@@ -16,8 +16,8 @@ from pylabrobot.formulatrix.mantis.driver.oem_config import (
   ENCODER_CORRECTION_FILE,
   SBS_ADAPTER_FILE,
   UNKNOWN_ZONE,
-  WASTE_STATION_ADAPTER_FILE,
-  WASTE_STATION_FILE,
+  WASTE_APPROACH_PATH_ADAPTER_FILE,
+  WASTE_APPROACH_PATH_FILE,
   ZONES,
   _load_unit_configuration,
   _parse_config_entries,
@@ -163,8 +163,9 @@ SYNTHETIC_ZONES_BLOCK = {
   "safe_xy_routes": SYNTHETIC_SAFE_XY_ROUTES,
   "idle_routes": SYNTHETIC_IDLE_ROUTES,
 }
-# Synthetic station routes from idle, in the shape of a v4 install's: the waste station's starts
-# with a line naming no axis, the ready position and the safe height, Z -1.570.
+# Synthetic approach paths from idle, in the shape of a v4 install's: the waste's starts with a line
+# naming no axis, the ready position and the safe height, Z -1.570; the two washes share all but
+# their last line, as the vendor's do.
 SYNTHETIC_WASTE_ROUTE: List[List[Optional[float]]] = [
   [None, None, None],
   [15.0, 30.0, None],
@@ -183,7 +184,15 @@ SYNTHETIC_WASH_ROUTE: List[List[Optional[float]]] = [
   [None, None, 40.0],
   [75.0, -50.0, 45.0],
 ]
-SYNTHETIC_STATIONS_BLOCK = {"waste": SYNTHETIC_WASTE_ROUTE, "wash": {"1": SYNTHETIC_WASH_ROUTE}}
+SYNTHETIC_WASH_2_ROUTE: List[List[Optional[float]]] = [
+  *SYNTHETIC_WASH_ROUTE[:4],
+  [90.0, -50.0, 45.0],
+]
+SYNTHETIC_APPROACH_PATHS_BLOCK = {
+  "waste": SYNTHETIC_WASTE_ROUTE,
+  "wash_1": SYNTHETIC_WASH_ROUTE,
+  "wash_2": SYNTHETIC_WASH_2_ROUTE,
+}
 
 
 def get_route_text(*, route: List[List[Optional[float]]]) -> str:
@@ -213,7 +222,7 @@ def get_zone_config(*, rectangles: Dict[str, List[float]]) -> str:
   return HEAD + "".join(entries) + TAIL
 
 
-def get_route_files(*, zones: Dict[str, Any], stations: Dict[str, Any]) -> Dict[str, str]:
+def get_route_files(*, zones: Dict[str, Any], approach_paths: Dict[str, Any]) -> Dict[str, str]:
   """The route files of an install's System/Sequences/Common folder, by file name."""
   files = {}
   for family, field in (
@@ -222,13 +231,14 @@ def get_route_files(*, zones: Dict[str, Any], stations: Dict[str, Any]) -> Dict[
   ):
     for zone, route in zones[field].items():
       files[f"{family}{zone}ZoneSequence.seq.txt"] = get_route_text(route=route)
-  if "waste" in stations:
-    files[WASTE_STATION_FILE] = (
-      "RemarkSequenceItem Move%32To%32Waste%32Station \r\n"
-      + get_route_text(route=stations["waste"])
-    )
-  for station, route in stations.get("wash", {}).items():
-    files[f"MoveToWashStation{station}.seq.txt"] = get_route_text(route=route)
+  for name, route in approach_paths.items():
+    if name == "waste":
+      files[WASTE_APPROACH_PATH_FILE] = (
+        "RemarkSequenceItem Move%32To%32Waste%32Station \r\n" + get_route_text(route=route)
+      )
+    else:
+      position = name.split("_")[1]
+      files[f"MoveToWashStation{position}.seq.txt"] = get_route_text(route=route)
   return files
 
 
@@ -344,40 +354,52 @@ class ArmBlockTests(unittest.TestCase):
 
 
 def write_zone_install(
-  *, directory: str, zones: Dict[str, Any], stations: Dict[str, Any], zone_config: bool = True
+  *,
+  directory: str,
+  zones: Dict[str, Any],
+  approach_paths: Dict[str, Any],
+  zone_config: bool = True,
 ) -> str:
-  """Lay out a v4 install's Data folder with zones and stations; return its Device/Configs."""
+  """Lay out a v4 install's Data folder with zones and approach paths; return its Device/Configs."""
   configs = {"Device.config": V4_DEVICE_CONFIG}
   if zone_config:
     configs["DeviceZone.config"] = get_zone_config(rectangles=zones["rectangles"])
   configs_directory = write_install(directory=directory, configs=configs, corrections={})
   sequence_directory = os.path.join(directory, "Data", COMMON_SEQUENCE_DIRECTORY)
   os.makedirs(sequence_directory)
-  write_files(directory=sequence_directory, files=get_route_files(zones=zones, stations=stations))
+  write_files(
+    directory=sequence_directory,
+    files=get_route_files(zones=zones, approach_paths=approach_paths),
+  )
   return configs_directory
 
 
 class RouteBlockTests(unittest.TestCase):
-  def load(self, *, zones=SYNTHETIC_ZONES_BLOCK, stations=SYNTHETIC_STATIONS_BLOCK, **kwargs):
+  def load(
+    self, *, zones=SYNTHETIC_ZONES_BLOCK, approach_paths=SYNTHETIC_APPROACH_PATHS_BLOCK, **kwargs
+  ):
     with tempfile.TemporaryDirectory() as directory:
       return _load_unit_configuration(
         oem_config_directory=write_zone_install(
-          directory=directory, zones=zones, stations=stations, **kwargs
+          directory=directory, zones=zones, approach_paths=approach_paths, **kwargs
         )
       )
 
-  def test_a_v4_install_gives_its_zones_and_stations(self):
+  def test_a_v4_install_gives_its_zones_and_approach_paths(self):
     blocks = self.load()
     self.assertEqual(blocks["zones"], SYNTHETIC_ZONES_BLOCK)
-    self.assertEqual(blocks["stations"], SYNTHETIC_STATIONS_BLOCK)
+    self.assertEqual(blocks["approach_paths"], SYNTHETIC_APPROACH_PATHS_BLOCK)
 
   def test_without_device_zone_config_there_are_no_zones(self):
     blocks = self.load(zone_config=False)
     self.assertNotIn("zones", blocks)
-    # A v3 does not read the v4's waste station route.
-    self.assertEqual(blocks["stations"], {"wash": SYNTHETIC_STATIONS_BLOCK["wash"]})
+    # A v3 does not read the v4's waste approach path.
+    self.assertEqual(
+      blocks["approach_paths"],
+      {"wash_1": SYNTHETIC_WASH_ROUTE, "wash_2": SYNTHETIC_WASH_2_ROUTE},
+    )
 
-  def test_each_generation_reads_its_own_waste_station_route(self):
+  def test_each_generation_reads_its_own_waste_approach_path(self):
     # Every unit seen has both files: a v4 (with DeviceZone.config) reads one, a v3 the other.
     for zone_config, expected in ((True, SYNTHETIC_WASTE_ROUTE), (False, SYNTHETIC_WASH_ROUTE)):
       with self.subTest(zone_config=zone_config):
@@ -385,15 +407,15 @@ class RouteBlockTests(unittest.TestCase):
           configs_directory = write_zone_install(
             directory=directory,
             zones=SYNTHETIC_ZONES_BLOCK,
-            stations={"waste": SYNTHETIC_WASTE_ROUTE},
+            approach_paths={"waste": SYNTHETIC_WASTE_ROUTE},
             zone_config=zone_config,
           )
           write_files(
             directory=os.path.join(directory, "Data", COMMON_SEQUENCE_DIRECTORY),
-            files={WASTE_STATION_ADAPTER_FILE: get_route_text(route=SYNTHETIC_WASH_ROUTE)},
+            files={WASTE_APPROACH_PATH_ADAPTER_FILE: get_route_text(route=SYNTHETIC_WASH_ROUTE)},
           )
           blocks = _load_unit_configuration(oem_config_directory=configs_directory)
-        self.assertEqual(blocks["stations"], {"waste": expected})
+        self.assertEqual(blocks["approach_paths"], {"waste": expected})
 
   def test_a_missing_route_refuses(self):
     zones = {
